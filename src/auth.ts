@@ -1,35 +1,36 @@
 /**
- * Simplified OAuth for Claude Desktop access control.
+ * OAuth 2.1 for MCP — Claude connects with pre-configured client credentials.
  *
- * Unlike Whoop (which requires user OAuth login), Hevy uses a static API key.
- * The outer OAuth layer remains for Claude Desktop compatibility:
- *
- * 1. Claude discovers OAuth via /.well-known/oauth-authorization-server
- * 2. Claude calls /oauth/authorize with its client_id
- * 3. We immediately generate an auth code (no external login needed)
- * 4. We redirect back to Claude with the code
- * 5. Claude exchanges that code at /oauth/token
- * 6. We return a session token
- * 7. Claude sends session token as Bearer on /mcp requests
- * 8. We use the HEVY_API_KEY env var for all API calls
+ * Flow:
+ * 1. User deploys server with OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, HEVY_API_KEY
+ * 2. User adds MCP in Claude, enters client_id + client_secret
+ * 3. Claude discovers OAuth via /.well-known endpoints
+ * 4. Claude opens browser to /oauth/authorize → auto-approves, redirects back
+ * 5. Claude exchanges code at /oauth/token (with PKCE verification)
+ * 6. Claude uses session token as Bearer on /mcp
+ * 7. Server uses HEVY_API_KEY for all Hevy API calls
  */
 
-// In-memory stores
-const authCodes = new Set<string>();
+import crypto from "node:crypto";
+
+// ── Storage ────────────────────────────────────────────────────────
+
+const authCodes = new Map<string, { clientId: string; redirectUri: string; codeChallenge: string }>();
 const sessions = new Set<string>();
 
 function env(key: string): string {
   return process.env[key]!;
 }
 
-// ── OAuth Discovery ─────────────────────────────────────────────────
+// ── Discovery ──────────────────────────────────────────────────────
 
 export function handleProtectedResourceMetadata(_req: any, res: any) {
   const base = env("BASE_URL");
   res.json({
-    resource: base,
+    resource: `${base}/mcp`,
     authorization_servers: [base],
     bearer_methods_supported: ["header"],
+    scopes_supported: ["hevy"],
   });
 }
 
@@ -47,7 +48,9 @@ export function handleAuthServerMetadata(_req: any, res: any) {
   });
 }
 
-// ── Dynamic Client Registration ─────────────────────────────────────
+// ── Dynamic Client Registration ────────────────────────────────────
+// Some clients use DCR even when pre-configured credentials exist.
+// We return the static credentials so both flows work.
 
 export function handleRegister(req: any, res: any) {
   res.status(201).json({
@@ -61,42 +64,58 @@ export function handleRegister(req: any, res: any) {
   });
 }
 
-// ── Authorize: Claude → us → immediately back to Claude ─────────────
+// ── Authorize: auto-approve, redirect back to Claude ───────────────
 
 export function handleAuthorize(req: any, res: any) {
-  const { client_id, redirect_uri, state } = req.query;
+  const { client_id, redirect_uri, state, code_challenge } = req.query;
 
   if (client_id !== env("OAUTH_CLIENT_ID")) {
     return res.status(403).send("Invalid client");
   }
 
-  // No external login needed — generate auth code immediately
   const code = crypto.randomUUID();
-  authCodes.add(code);
+  authCodes.set(code, {
+    clientId: client_id as string,
+    redirectUri: redirect_uri as string,
+    codeChallenge: (code_challenge as string) || "",
+  });
+
+  // Auth codes expire after 5 minutes
+  setTimeout(() => authCodes.delete(code), 5 * 60 * 1000);
 
   const redirectUrl = new URL(redirect_uri as string);
   redirectUrl.searchParams.set("code", code);
-  if (state) {
-    redirectUrl.searchParams.set("state", state as string);
-  }
+  if (state) redirectUrl.searchParams.set("state", state as string);
 
   res.redirect(redirectUrl.toString());
 }
 
-// ── Token: Claude exchanges code for session token ──────────────────
+// ── Token Exchange (with PKCE) ─────────────────────────────────────
 
 export function handleToken(req: any, res: any) {
-  const { grant_type, code, client_id, client_secret, refresh_token } = req.body;
+  const { grant_type, code, client_id, client_secret, code_verifier, refresh_token } = req.body;
 
-  // Verify Claude's credentials
   if (client_id !== env("OAUTH_CLIENT_ID") || client_secret !== env("OAUTH_CLIENT_SECRET")) {
-    return res.status(403).json({ error: "invalid_client" });
+    return res.status(401).json({ error: "invalid_client" });
   }
 
   if (grant_type === "authorization_code") {
-    if (!authCodes.has(code)) {
+    const authCode = authCodes.get(code);
+    if (!authCode || authCode.clientId !== client_id) {
       return res.status(400).json({ error: "invalid_grant" });
     }
+
+    // PKCE verification
+    if (authCode.codeChallenge) {
+      if (!code_verifier) {
+        return res.status(400).json({ error: "invalid_grant", error_description: "code_verifier required" });
+      }
+      const expected = crypto.createHash("sha256").update(code_verifier).digest("base64url");
+      if (expected !== authCode.codeChallenge) {
+        return res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
+      }
+    }
+
     authCodes.delete(code);
 
     const sessionToken = crypto.randomUUID();
@@ -130,7 +149,7 @@ export function handleToken(req: any, res: any) {
   res.status(400).json({ error: "unsupported_grant_type" });
 }
 
-// ── Helpers for MCP endpoint ────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────
 
 export function isValidSession(sessionToken: string): boolean {
   return sessions.has(sessionToken);
