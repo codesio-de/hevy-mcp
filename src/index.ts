@@ -51,7 +51,7 @@ function createServer(apiKey: string): McpServer {
   return server;
 }
 
-async function handleMcp(req: Request, res: Response) {
+app.post("/mcp", async (req: Request, res: Response) => {
   const auth = req.headers.authorization;
   const sessionToken = auth?.slice(7);
 
@@ -76,10 +76,7 @@ async function handleMcp(req: Request, res: Response) {
 
   await server.connect(transport);
   await transport.handleRequest(req, res as any, req.body);
-}
-
-app.get("/mcp", handleMcp);
-app.post("/mcp", handleMcp);
+});
 
 // ── Health ──────────────────────────────────────────────────────────
 
