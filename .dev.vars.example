@@ -1,0 +1,5 @@
+# Local secrets for `wrangler dev`. Copy to `.dev.vars` and fill in.
+# For production, set these with: npx wrangler secret put <NAME>
+OAUTH_CLIENT_ID=random-id-you-enter-in-claude
+OAUTH_CLIENT_SECRET=random-secret-you-enter-in-claude
+HEVY_API_KEY=from-hevy-settings-developer

@@ -1,0 +1,21 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "hevy-mcp",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-06-01",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"observability": {
+		"enabled": true
+	},
+	// KV namespace for OAuth auth codes + session tokens.
+	// The id is an account-scoped identifier, not a secret. If you fork this repo,
+	// create your own (npx wrangler kv namespace create OAUTH_KV) and replace it.
+	"kv_namespaces": [
+		{
+			"binding": "OAUTH_KV",
+			"id": "9583f491677e424db1e649a894ab4c1a"
+		}
+	]
+}
